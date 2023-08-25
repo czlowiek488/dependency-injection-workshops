@@ -1,25 +1,10 @@
-import type { Knex } from "knex";
-import knex from "knex";
+import type { Dependencies } from "..";
 
 export class UserRepository {
-  private database: Knex;
-
-  public constructor() {
-    this.database = knex({
-      client: "pg",
-      connection: {
-        user: process.env.DATABASE_USER,
-        password: process.env.DATABASE_PASSWORD,
-        database: process.env.DATABASE_NAME,
-        host: process.env.DATABASE_HOST,
-        port: Number(process.env.DATABASE_PORT),
-      },
-      acquireConnectionTimeout: 30000,
-    });
-  }
+  public constructor(private dependencies: Dependencies) {}
 
   public async insertOne(payload: { userId: string; userName: string; randomWord: string }) {
-    await this.database.table("app.users").insert({
+    await this.dependencies.database.table("app.users").insert({
       user_id: payload.userId,
       user_name: payload.userName,
       random_word: payload.randomWord,
@@ -27,7 +12,7 @@ export class UserRepository {
   }
 
   public async deleteOne(payload: { userId: string }) {
-    await this.database
+    await this.dependencies.database
       .table("app.users")
       .where({
         user_id: payload.userId,
@@ -36,7 +21,7 @@ export class UserRepository {
   }
 
   public async listAll() {
-    const users = await this.database.table("app.users").select();
+    const users = await this.dependencies.database.table("app.users").select();
     return users.map((user) => ({
       userId: user.user_id,
       userName: user.user_name,

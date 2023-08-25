@@ -1,75 +1,83 @@
 import express from "express";
+import type { Express } from "express";
 import http from "http";
 import { appConfig } from "./shared/config";
 import { v4 } from "uuid";
 import { StatusCodes } from "http-status-codes";
 import { UserRepository } from "./shared/users.repository";
+import type { Knex } from "knex";
 import knex from "knex";
 import axios from "axios";
+import { asClass, asValue, asFunction } from "awilix";
+import { createContainer } from "awilix";
+import { randomWordApiIntegration, type RandomWordApiIntegration } from "./shared/random-wort-api.integration";
+import type { Route } from "./routes/items-add.get.route";
+import { itemsAddGetRoute } from "./routes/items-add.get.route";
+import { asArray, asProxied } from "./shared/lib/awilix.lib";
+import { errorProxy } from "./shared/proxy/dependency-error-decorator.proxy";
+import { statsDProxy } from "./shared/proxy/dependency-statsd.proxy";
+import { loggerProxy } from "./shared/proxy/dependency-logger.proxy";
+import { ItemRepository } from "./shared/items.repository";
 
-const app = express();
-const userRepository = new UserRepository();
+export interface Dependencies {
+  userRepository: UserRepository;
+  itemRepository: ItemRepository;
+  randomWordApiIntegration: RandomWordApiIntegration;
+  app: Express;
+  database: Knex;
+  appConfig: typeof appConfig;
+  routes: Route[];
+}
 
-const database = knex({
-  client: "pg",
-  connection: {
-    user: process.env.DATABASE_USER,
-    password: process.env.DATABASE_PASSWORD,
-    database: process.env.DATABASE_NAME,
-    host: process.env.DATABASE_HOST,
-    port: Number(process.env.DATABASE_PORT),
-  },
-  acquireConnectionTimeout: 30000,
+export const container = createContainer<Dependencies>().register({
+  userRepository: asClass(UserRepository),
+  itemRepository: asClass(ItemRepository),
+  appConfig: asValue(appConfig),
+  app: asValue(express()),
+  randomWordApiIntegration: asProxied(randomWordApiIntegration, [errorProxy, statsDProxy, loggerProxy]),
+  database: asFunction((dependencies: Dependencies) =>
+    knex({
+      client: "pg",
+      connection: {
+        user: dependencies.appConfig.user,
+        password: dependencies.appConfig.password,
+        database: dependencies.appConfig.database,
+        host: dependencies.appConfig.host,
+        port: dependencies.appConfig.port,
+      },
+      acquireConnectionTimeout: 30000,
+    }),
+  ),
+  routes: asArray<Route>([itemsAddGetRoute].map((route) => asFunction(route))),
 });
 
-app.use(function (req, res, next) {
+container.cradle.routes.forEach((route) => route.loadRoute());
+
+container.cradle.app.use(function (req, res, next) {
   console.log(`App received http request: ${req.method} ${req.url} | ${JSON.stringify(req.params)}`);
   next();
 });
 
-app.get("/items/add/:itemName/:userId", async (req, res) => {
-  const itemId = v4();
-  const randomWordAxiosResponse = await axios({
-    url: "https://random-word-api.herokuapp.com/word",
+container.cradle.app.get("/items/remove/:itemId", async (req, res) => {
+  await container.cradle.itemRepository.deleteOne({
+    itemId: req.params.itemId,
   });
-  await database.table("app.items").insert({
-    item_id: itemId,
-    user_id: req.params.userId,
-    item_name: req.params.itemName,
-    random_word: randomWordAxiosResponse.data[0],
-  });
-  res.status(StatusCodes.OK).json({ itemId });
-});
-
-app.get("/items/remove/:itemId", async (req, res) => {
-  await database
-    .table("app.items")
-    .where({
-      item_id: req.params.itemId,
-    })
-    .delete();
   res.sendStatus(StatusCodes.OK);
 });
 
-app.get("/items/list", async (req, res) => {
-  const items = await database.table("app.items").select();
+container.cradle.app.get("/items/list", async (req, res) => {
+  const items = await container.cradle.itemRepository.listAll();
   res.status(StatusCodes.OK).json({
-    items: items.map((item) => ({
-      itemId: item.item_id,
-      userId: item.user_id,
-      createdAt: item.created_at,
-      itemName: item.item_name,
-      randomWord: item.random_word,
-    })),
+    items,
   });
 });
 
-app.get("/users/add/:userName", async (req, res) => {
+container.cradle.app.get("/users/add/:userName", async (req, res) => {
   const userId = v4();
   const randomWordAxiosResponse = await axios({
     url: "https://random-word-api.herokuapp.com/word",
   });
-  await userRepository.insertOne({
+  await container.cradle.userRepository.insertOne({
     userId,
     userName: req.params.userName,
     randomWord: randomWordAxiosResponse.data[0],
@@ -77,13 +85,13 @@ app.get("/users/add/:userName", async (req, res) => {
   res.status(StatusCodes.OK).json({ userId });
 });
 
-app.get("/users/list", async (req, res) => {
-  const users = await userRepository.listAll();
+container.cradle.app.get("/users/list", async (req, res) => {
+  const users = await container.cradle.userRepository.listAll();
   res.status(StatusCodes.OK).json({ users });
 });
 
-app.get("/user-items/list/:userId", async (req, res) => {
-  const userItems = await database
+container.cradle.app.get("/user-items/list/:userId", async (req, res) => {
+  const userItems = await container.cradle.database
     .select("*")
     .from("app.users")
     .leftJoin("app.items", "users.user_id", "items.user_id")
@@ -101,12 +109,12 @@ app.get("/user-items/list/:userId", async (req, res) => {
   });
 });
 
-app.use(function (req, res, next) {
+container.cradle.app.use(function (req, res, next) {
   console.log(`App responded on http request: <${res.statusCode}> ${req.method} ${req.url}`);
   next();
 });
 
-app.use([
+container.cradle.app.use([
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (err, req, res, next): void => {
     console.warn(err);
@@ -115,5 +123,5 @@ app.use([
 ]);
 
 http
-  .createServer(app)
+  .createServer(container.cradle.app)
   .listen({ port: appConfig.PORT }, () => console.log(`Server is listening on port: ${appConfig.PORT}`));
